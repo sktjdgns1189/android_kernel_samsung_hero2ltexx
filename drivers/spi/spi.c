@@ -948,10 +948,14 @@ static void spi_pump_messages(struct kthread_work *work)
 		ret = master->prepare_transfer_hardware(master);
 		if (ret) {
 			dev_err(&master->dev,
-				"failed to prepare transfer hardware\n");
+				"failed to prepare transfer hardware: %d\n",
+				ret);
 
 			if (master->auto_runtime_pm)
 				pm_runtime_put(master->dev.parent);
+
+			master->cur_msg->status = ret;
+			spi_finalize_current_message(master);
 			return;
 		}
 	}
@@ -1073,13 +1077,14 @@ void spi_finalize_current_message(struct spi_master *master)
 				"failed to unprepare message: %d\n", ret);
 		}
 	}
+
+	trace_spi_message_done(mesg);
+
 	master->cur_msg_prepared = false;
 
 	mesg->state = NULL;
 	if (mesg->complete)
 		mesg->complete(mesg->context);
-
-	trace_spi_message_done(mesg);
 }
 EXPORT_SYMBOL_GPL(spi_finalize_current_message);
 

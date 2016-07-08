@@ -1266,6 +1266,13 @@ static void regulator_supply_alias(struct device **dev, const char **supply)
 	}
 }
 
+static int _regulator_get_disable_time(struct regulator_dev *rdev)
+{
+	if (!rdev->desc->ops->disable_time)
+		return rdev->desc->disable_time;
+	return rdev->desc->ops->disable_time(rdev);
+}
+
 static struct regulator_dev *regulator_dev_lookup(struct device *dev,
 						  const char *supply,
 						  int *ret)
@@ -1488,7 +1495,7 @@ struct regulator *regulator_get_optional(struct device *dev, const char *id)
 }
 EXPORT_SYMBOL_GPL(regulator_get_optional);
 
-/* Locks held by regulator_put() */
+/* regulator_list_mutex lock held by regulator_put() */
 static void _regulator_put(struct regulator *regulator)
 {
 	struct regulator_dev *rdev;
@@ -1503,12 +1510,14 @@ static void _regulator_put(struct regulator *regulator)
 	/* remove any sysfs entries */
 	if (regulator->dev)
 		sysfs_remove_link(&rdev->dev.kobj, regulator->supply_name);
+	mutex_lock(&rdev->mutex);
 	kfree(regulator->supply_name);
 	list_del(&regulator->list);
 	kfree(regulator);
 
 	rdev->open_count--;
 	rdev->exclusive = 0;
+	mutex_unlock(&rdev->mutex);
 
 	module_put(rdev->owner);
 }
@@ -1839,10 +1848,12 @@ static int _regulator_do_enable(struct regulator_dev *rdev)
 	}
 
 	if (rdev->ena_pin) {
-		ret = regulator_ena_gpio_ctrl(rdev, true);
-		if (ret < 0)
-			return ret;
-		rdev->ena_gpio_state = 1;
+		if (!rdev->ena_gpio_state) {
+			ret = regulator_ena_gpio_ctrl(rdev, true);
+			if (ret < 0)
+				return ret;
+			rdev->ena_gpio_state = 1;
+		}
 	} else if (rdev->desc->ops->enable) {
 		ret = rdev->desc->ops->enable(rdev);
 		if (ret < 0)
@@ -1934,15 +1945,26 @@ EXPORT_SYMBOL_GPL(regulator_enable);
 
 static int _regulator_do_disable(struct regulator_dev *rdev)
 {
-	int ret;
+	int ret, delay;
+
+	/* Query before disabling in case configuration dependent.  */
+	ret = _regulator_get_disable_time(rdev);
+	if (ret >= 0) {
+		delay = ret;
+	} else {
+		rdev_warn(rdev, "disable_time() failed: %d\n", ret);
+		delay = 0;
+	}
 
 	trace_regulator_disable(rdev_get_name(rdev));
 
 	if (rdev->ena_pin) {
-		ret = regulator_ena_gpio_ctrl(rdev, false);
-		if (ret < 0)
-			return ret;
-		rdev->ena_gpio_state = 0;
+		if (rdev->ena_gpio_state) {
+			ret = regulator_ena_gpio_ctrl(rdev, false);
+			if (ret < 0)
+				return ret;
+			rdev->ena_gpio_state = 0;
+		}
 
 	} else if (rdev->desc->ops->disable) {
 		ret = rdev->desc->ops->disable(rdev);
@@ -1955,6 +1977,18 @@ static int _regulator_do_disable(struct regulator_dev *rdev)
 	 */
 	if (rdev->desc->off_on_delay)
 		rdev->last_off_jiffy = jiffies;
+
+	/* Allow the regulator to ramp; it would be useful to extend
+	 * this for bulk operations so that the regulators can ramp
+	 * together.  */
+	trace_regulator_disable_delay(rdev_get_name(rdev));
+
+	if (delay >= 1000) {
+		mdelay(delay / 1000);
+		udelay(delay % 1000);
+	} else if (delay) {
+		udelay(delay);
+	}
 
 	trace_regulator_disable_complete(rdev_get_name(rdev));
 
@@ -3657,12 +3691,6 @@ regulator_register(const struct regulator_desc *regulator_desc,
 				 config->ena_gpio, ret);
 			goto wash;
 		}
-
-		if (config->ena_gpio_flags & GPIOF_OUT_INIT_HIGH)
-			rdev->ena_gpio_state = 1;
-
-		if (config->ena_gpio_invert)
-			rdev->ena_gpio_state = !rdev->ena_gpio_state;
 	}
 
 	/* set regulator constraints */
@@ -3835,9 +3863,11 @@ int regulator_suspend_finish(void)
 	list_for_each_entry(rdev, &regulator_list, list) {
 		mutex_lock(&rdev->mutex);
 		if (rdev->use_count > 0  || rdev->constraints->always_on) {
-			error = _regulator_do_enable(rdev);
-			if (error)
-				ret = error;
+			if (!_regulator_is_enabled(rdev)) {
+				error = _regulator_do_enable(rdev);
+				if (error)
+					ret = error;
+			}
 		} else {
 			if (!have_full_constraints())
 				goto unlock;

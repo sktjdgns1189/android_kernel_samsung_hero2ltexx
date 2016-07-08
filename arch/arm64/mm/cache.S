@@ -20,6 +20,8 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
+#include <asm/cpufeature.h>
+#include <asm/alternative-asm.h>
 
 #include "proc-macros.S"
 
@@ -96,6 +98,26 @@ ENTRY(flush_cache_all)
 	ret	x12
 ENDPROC(flush_cache_all)
 
+ENTRY(__flush_dcache_louis)
+	dmb	ish
+	mrs	x0, clidr_el1
+	ands	x3, x0, #(7 << 21)
+	lsr	x3, x3, #20			// w3 = LoUIS * 2
+	b.eq	level_is_zero
+	mov	x10, #0
+	b	loop1				// start flushing cache
+level_is_zero:
+	ret
+ENDPROC(__flush_dcache_louis)
+
+ENTRY(flush_cache_louis)
+	mov	x12, lr
+	bl	__flush_dcache_louis
+	mov	x0, #0
+	ic	ialluis
+	ret	x12
+ENDPROC(flush_cache_louis)
+
 /*
  *	flush_icache_range(start,end)
  *
@@ -107,6 +129,9 @@ ENDPROC(flush_cache_all)
  *	- end     - virtual end address of region
  */
 ENTRY(flush_icache_range)
+#ifdef CONFIG_RKP_CFP_JOPP
+FALLTHROUGH(__flush_cache_user_range)
+#endif
 	/* FALLTHROUGH */
 
 /*
@@ -173,6 +198,9 @@ ENDPROC(__flush_dcache_area)
  *	- end     - end address of region
  */
 ENTRY(__inval_cache_range)
+#ifdef CONFIG_RKP_CFP_JOPP
+FALLTHROUGH(__dma_inv_range)
+#endif
 	/* FALLTHROUGH */
 
 /*
@@ -210,7 +238,7 @@ __dma_clean_range:
 	dcache_line_size x2, x3
 	sub	x3, x2, #1
 	bic	x0, x0, x3
-1:	dc	cvac, x0			// clean D / U line
+1:	alternative_insn "dc cvac, x0", "dc civac, x0", ARM64_WORKAROUND_CLEAN_CACHE
 	add	x0, x0, x2
 	cmp	x0, x1
 	b.lo	1b

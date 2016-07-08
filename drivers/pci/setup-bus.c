@@ -530,9 +530,8 @@ EXPORT_SYMBOL(pci_setup_cardbus);
    config space writes, so it's quite possible that an I/O window of
    the bridge will have some undesirable address (e.g. 0) after the
    first write. Ditto 64-bit prefetchable MMIO.  */
-static void pci_setup_bridge_io(struct pci_bus *bus)
+static void pci_setup_bridge_io(struct pci_dev *bridge)
 {
-	struct pci_dev *bridge = bus->self;
 	struct resource *res;
 	struct pci_bus_region region;
 	unsigned long io_mask;
@@ -545,7 +544,7 @@ static void pci_setup_bridge_io(struct pci_bus *bus)
 		io_mask = PCI_IO_1K_RANGE_MASK;
 
 	/* Set up the top and bottom of the PCI I/O segment for this bus. */
-	res = bus->resource[0];
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 0];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_IO) {
 		pci_read_config_word(bridge, PCI_IO_BASE, &l);
@@ -568,15 +567,14 @@ static void pci_setup_bridge_io(struct pci_bus *bus)
 	pci_write_config_dword(bridge, PCI_IO_BASE_UPPER16, io_upper16);
 }
 
-static void pci_setup_bridge_mmio(struct pci_bus *bus)
+static void pci_setup_bridge_mmio(struct pci_dev *bridge)
 {
-	struct pci_dev *bridge = bus->self;
 	struct resource *res;
 	struct pci_bus_region region;
 	u32 l;
 
 	/* Set up the top and bottom of the PCI Memory segment for this bus. */
-	res = bus->resource[1];
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 1];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_MEM) {
 		l = (region.start >> 16) & 0xfff0;
@@ -588,9 +586,8 @@ static void pci_setup_bridge_mmio(struct pci_bus *bus)
 	pci_write_config_dword(bridge, PCI_MEMORY_BASE, l);
 }
 
-static void pci_setup_bridge_mmio_pref(struct pci_bus *bus)
+static void pci_setup_bridge_mmio_pref(struct pci_dev *bridge)
 {
-	struct pci_dev *bridge = bus->self;
 	struct resource *res;
 	struct pci_bus_region region;
 	u32 l, bu, lu;
@@ -602,7 +599,7 @@ static void pci_setup_bridge_mmio_pref(struct pci_bus *bus)
 
 	/* Set up PREF base/limit. */
 	bu = lu = 0;
-	res = bus->resource[2];
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 2];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_PREFETCH) {
 		l = (region.start >> 16) & 0xfff0;
@@ -630,13 +627,13 @@ static void __pci_setup_bridge(struct pci_bus *bus, unsigned long type)
 		 &bus->busn_res);
 
 	if (type & IORESOURCE_IO)
-		pci_setup_bridge_io(bus);
+		pci_setup_bridge_io(bridge);
 
 	if (type & IORESOURCE_MEM)
-		pci_setup_bridge_mmio(bus);
+		pci_setup_bridge_mmio(bridge);
 
 	if (type & IORESOURCE_PREFETCH)
-		pci_setup_bridge_mmio_pref(bus);
+		pci_setup_bridge_mmio_pref(bridge);
 
 	pci_write_config_word(bridge, PCI_BRIDGE_CONTROL, bus->bridge_ctl);
 }
@@ -647,6 +644,41 @@ void pci_setup_bridge(struct pci_bus *bus)
 				  IORESOURCE_PREFETCH;
 
 	__pci_setup_bridge(bus, type);
+}
+
+
+int pci_claim_bridge_resource(struct pci_dev *bridge, int i)
+{
+	if (i < PCI_BRIDGE_RESOURCES || i > PCI_BRIDGE_RESOURCE_END)
+		return 0;
+
+	if (pci_claim_resource(bridge, i) == 0)
+		return 0;	/* claimed the window */
+
+	if ((bridge->class >> 8) != PCI_CLASS_BRIDGE_PCI)
+		return 0;
+
+	if (!pci_bus_clip_resource(bridge, i))
+		return -EINVAL;	/* clipping didn't change anything */
+
+	switch (i - PCI_BRIDGE_RESOURCES) {
+	case 0:
+		pci_setup_bridge_io(bridge);
+		break;
+	case 1:
+		pci_setup_bridge_mmio(bridge);
+		break;
+	case 2:
+		pci_setup_bridge_mmio_pref(bridge);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (pci_claim_resource(bridge, i) == 0)
+		return 0;	/* claimed a smaller window */
+
+	return -EINVAL;
 }
 
 /* Check whether the bridge supports optional I/O and
@@ -1448,7 +1480,7 @@ static void pci_bus_dump_resources(struct pci_bus *bus)
 	}
 }
 
-static int pci_bus_get_depth(struct pci_bus *bus)
+static int __maybe_unused pci_bus_get_depth(struct pci_bus *bus)
 {
 	int depth = 0;
 	struct pci_bus *child_bus;
@@ -1487,7 +1519,7 @@ void __init pci_realloc_get_opt(char *str)
 	else if (!strncmp(str, "on", 2))
 		pci_realloc_enable = user_enabled;
 }
-static bool pci_realloc_enabled(enum enable_type enable)
+static bool __maybe_unused pci_realloc_enabled(enum enable_type enable)
 {
 	return enable >= user_enabled;
 }
@@ -1531,7 +1563,7 @@ static enum enable_type pci_realloc_detect(struct pci_bus *bus,
 	return enable_local;
 }
 #else
-static enum enable_type pci_realloc_detect(struct pci_bus *bus,
+static enum enable_type __maybe_unused pci_realloc_detect(struct pci_bus *bus,
 			 enum enable_type enable_local)
 {
 	return enable_local;
@@ -1555,18 +1587,6 @@ void pci_assign_unassigned_root_bus_resources(struct pci_bus *bus)
 	unsigned long type_mask = IORESOURCE_IO | IORESOURCE_MEM |
 				  IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 	int pci_try_num = 1;
-	enum enable_type enable_local;
-
-	/* don't realloc if asked to do so */
-	enable_local = pci_realloc_detect(bus, pci_realloc_enable);
-	if (pci_realloc_enabled(enable_local)) {
-		int max_depth = pci_bus_get_depth(bus);
-
-		pci_try_num = max_depth + 1;
-		dev_printk(KERN_DEBUG, &bus->dev,
-			   "max bus depth: %d pci_try_num: %d\n",
-			   max_depth, pci_try_num);
-	}
 
 again:
 	/*
@@ -1590,11 +1610,6 @@ again:
 		goto dump;
 
 	if (tried_times >= pci_try_num) {
-		if (enable_local == undefined)
-			dev_info(&bus->dev, "Some PCI device resources are unassigned, try booting with pci=realloc\n");
-		else if (enable_local == auto_enabled)
-			dev_info(&bus->dev, "Automatically enabled pci realloc, if you have problem, try booting with pci=realloc=off\n");
-
 		free_list(&fail_head);
 		goto dump;
 	}

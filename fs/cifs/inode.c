@@ -895,7 +895,7 @@ inode_has_hashed_dentries(struct inode *inode)
 	struct dentry *dentry;
 
 	spin_lock(&inode->i_lock);
-	hlist_for_each_entry(dentry, &inode->i_dentry, d_alias) {
+	hlist_for_each_entry(dentry, &inode->i_dentry, d_u.d_alias) {
 		if (!d_unhashed(dentry) || IS_ROOT(dentry)) {
 			spin_unlock(&inode->i_lock);
 			return true;
@@ -1807,11 +1807,11 @@ cifs_invalidate_mapping(struct inode *inode)
  * @word: long word containing the bit lock
  */
 static int
-cifs_wait_bit_killable(struct wait_bit_key *key)
+cifs_wait_bit_killable(struct wait_bit_key *key, int mode)
 {
-	if (fatal_signal_pending(current))
-		return -ERESTARTSYS;
 	freezable_schedule_unsafe();
+	if (signal_pending_state(mode, current))
+		return -ERESTARTSYS;
 	return 0;
 }
 

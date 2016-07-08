@@ -23,11 +23,14 @@
 
 #include <linux/types.h>
 #include <linux/blk_types.h>
+#include <linux/exynos-ss.h>
 
 #include <asm/byteorder.h>
 #include <asm/barrier.h>
 #include <asm/pgtable.h>
 #include <asm/early_ioremap.h>
+#include <asm/alternative.h>
+#include <asm/cpufeature.h>
 
 #include <xen/xen.h>
 
@@ -36,49 +39,78 @@
  */
 static inline void __raw_writeb(u8 val, volatile void __iomem *addr)
 {
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_IN);
 	asm volatile("strb %w0, [%1]" : : "r" (val), "r" (addr));
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 }
 
 static inline void __raw_writew(u16 val, volatile void __iomem *addr)
 {
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_IN);
 	asm volatile("strh %w0, [%1]" : : "r" (val), "r" (addr));
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 }
 
 static inline void __raw_writel(u32 val, volatile void __iomem *addr)
 {
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_IN);
 	asm volatile("str %w0, [%1]" : : "r" (val), "r" (addr));
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 }
 
 static inline void __raw_writeq(u64 val, volatile void __iomem *addr)
 {
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_IN);
 	asm volatile("str %0, [%1]" : : "r" (val), "r" (addr));
+	exynos_ss_reg(0, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 }
 
 static inline u8 __raw_readb(const volatile void __iomem *addr)
 {
 	u8 val;
-	asm volatile("ldrb %w0, [%1]" : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, 0, (size_t)addr, ESS_FLAG_IN);
+	asm volatile(ALTERNATIVE("ldrb %w0, [%1]",
+				 "ldarb %w0, [%1]",
+				 ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE)
+		     : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 	return val;
 }
 
 static inline u16 __raw_readw(const volatile void __iomem *addr)
 {
 	u16 val;
-	asm volatile("ldrh %w0, [%1]" : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, 0, (size_t)addr, ESS_FLAG_IN);
+
+	asm volatile(ALTERNATIVE("ldrh %w0, [%1]",
+				 "ldarh %w0, [%1]",
+				 ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE)
+		     : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 	return val;
 }
 
 static inline u32 __raw_readl(const volatile void __iomem *addr)
 {
 	u32 val;
-	asm volatile("ldr %w0, [%1]" : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, 0, (size_t)addr, ESS_FLAG_IN);
+	asm volatile(ALTERNATIVE("ldr %w0, [%1]",
+				 "ldar %w0, [%1]",
+				 ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE)
+		     : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 	return val;
 }
 
 static inline u64 __raw_readq(const volatile void __iomem *addr)
 {
 	u64 val;
-	asm volatile("ldr %0, [%1]" : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, 0, (size_t)addr, ESS_FLAG_IN);
+	asm volatile(ALTERNATIVE("ldr %0, [%1]",
+				 "ldar %0, [%1]",
+				 ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE)
+		     : "=r" (val) : "r" (addr));
+	exynos_ss_reg(1, (size_t)val, (size_t)addr, ESS_FLAG_OUT);
 	return val;
 }
 

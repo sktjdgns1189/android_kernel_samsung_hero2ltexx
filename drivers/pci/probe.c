@@ -216,14 +216,17 @@ int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
 		res->flags |= IORESOURCE_SIZEALIGN;
 		if (res->flags & IORESOURCE_IO) {
 			l &= PCI_BASE_ADDRESS_IO_MASK;
+			sz &= PCI_BASE_ADDRESS_IO_MASK;
 			mask = PCI_BASE_ADDRESS_IO_MASK & (u32) IO_SPACE_LIMIT;
 		} else {
 			l &= PCI_BASE_ADDRESS_MEM_MASK;
+			sz &= PCI_BASE_ADDRESS_MEM_MASK;
 			mask = (u32)PCI_BASE_ADDRESS_MEM_MASK;
 		}
 	} else {
 		res->flags |= (l & IORESOURCE_ROM_ENABLE);
 		l &= PCI_ROM_ADDRESS_MASK;
+		sz &= PCI_ROM_ADDRESS_MASK;
 		mask = (u32)PCI_ROM_ADDRESS_MASK;
 	}
 
@@ -1130,7 +1133,7 @@ int pci_setup_device(struct pci_dev *dev)
 
 	/* Assume 32-bit PCI; let 64-bit PCI cards (which are far rarer)
 	   set this higher, assuming the system even supports it.  */
-	dev->dma_mask = 0xffffffff;
+	dev->dma_mask = 0xffffffffffffffff;
 
 	dev_set_name(&dev->dev, "%04x:%02x:%02x.%d", pci_domain_nr(dev->bus),
 		     dev->bus->number, PCI_SLOT(dev->devfn),
@@ -1529,10 +1532,10 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	set_dev_node(&dev->dev, pcibus_to_node(bus));
 	dev->dev.dma_mask = &dev->dma_mask;
 	dev->dev.dma_parms = &dev->dma_parms;
-	dev->dev.coherent_dma_mask = 0xffffffffull;
+	dev->dev.coherent_dma_mask = 0xffffffffffffffffull;
 
 	pci_set_dma_max_seg_size(dev, 65536);
-	pci_set_dma_seg_boundary(dev, 0xffffffff);
+	pci_set_dma_seg_boundary(dev, 0xffffffffffffffff);
 
 	/* Fix up broken headers */
 	pci_fixup_device(pci_fixup_header, dev);
@@ -1945,7 +1948,6 @@ struct pci_bus *pci_create_root_bus(struct device *parent, int bus,
 		goto err_out;
 	}
 	b->bridge = get_device(&bridge->dev);
-	device_enable_async_suspend(b->bridge);
 	pci_set_bus_of_node(b);
 
 	if (!parent)

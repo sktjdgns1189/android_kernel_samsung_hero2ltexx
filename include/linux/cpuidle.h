@@ -69,7 +69,6 @@ struct cpuidle_device {
 	unsigned int		cpu;
 
 	int			last_residency;
-	int			state_count;
 	struct cpuidle_state_usage	states_usage[CPUIDLE_STATE_MAX];
 	struct cpuidle_state_kobj *kobjs[CPUIDLE_STATE_MAX];
 	struct cpuidle_driver_kobj *kobj_driver;
@@ -116,6 +115,10 @@ struct cpuidle_driver {
 
 	/* the driver handles the cpus in cpumask */
 	struct cpumask		*cpumask;
+
+#ifdef CONFIG_CPU_IDLE_GOV_MENU
+	bool 			skip_correction;
+#endif
 };
 
 #ifdef CONFIG_CPU_IDLE

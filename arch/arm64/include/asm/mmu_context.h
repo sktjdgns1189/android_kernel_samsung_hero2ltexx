@@ -58,8 +58,14 @@ static inline void cpu_set_reserved_ttbr0(void)
 	unsigned long ttbr = page_to_phys(empty_zero_page);
 
 	asm(
+	"	tlbi	vaae1, xzr	\n"
+	"	dsb	nsh		\n"
+	"	tlbi	vaae1, xzr	\n"
 	"	msr	ttbr0_el1, %0			// set TTBR0\n"
-	"	isb"
+	"	tlbi	vaae1, xzr	\n"
+	"	isb			\n"
+	"	tlbi	vaae1, xzr	\n"
+	"	dsb	nsh		\n"
 	:
 	: "r" (ttbr));
 }
@@ -150,6 +156,15 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	  struct task_struct *tsk)
 {
 	unsigned int cpu = smp_processor_id();
+
+	/*
+	 * init_mm.pgd does not contain any user mappings and it is always
+	 * active for kernel addresses in TTBR1. Just set the reserved TTBR0.
+	 */
+	if (next == &init_mm) {
+		cpu_set_reserved_ttbr0();
+		return;
+	}
 
 	if (!cpumask_test_and_set_cpu(cpu, mm_cpumask(next)) || prev != next)
 		check_and_switch_context(next, tsk);

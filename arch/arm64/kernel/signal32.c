@@ -154,8 +154,7 @@ int copy_siginfo_to_user32(compat_siginfo_t __user *to, const siginfo_t *from)
 	case __SI_TIMER:
 		 err |= __put_user(from->si_tid, &to->si_tid);
 		 err |= __put_user(from->si_overrun, &to->si_overrun);
-		 err |= __put_user((compat_uptr_t)(unsigned long)from->si_ptr,
-				   &to->si_ptr);
+		 err |= __put_user(from->si_int, &to->si_int);
 		break;
 	case __SI_POLL:
 		err |= __put_user(from->si_band, &to->si_band);
@@ -184,7 +183,13 @@ int copy_siginfo_to_user32(compat_siginfo_t __user *to, const siginfo_t *from)
 	case __SI_MESGQ: /* But this is */
 		err |= __put_user(from->si_pid, &to->si_pid);
 		err |= __put_user(from->si_uid, &to->si_uid);
-		err |= __put_user((compat_uptr_t)(unsigned long)from->si_ptr, &to->si_ptr);
+		err |= __put_user(from->si_int, &to->si_int);
+		break;
+	case __SI_SYS:
+		err |= __put_user((compat_uptr_t)(unsigned long)
+				from->si_call_addr, &to->si_call_addr);
+		err |= __put_user(from->si_syscall, &to->si_syscall);
+		err |= __put_user(from->si_arch, &to->si_arch);
 		break;
 	default: /* this is just in case for now ... */
 		err |= __put_user(from->si_pid, &to->si_pid);
@@ -434,7 +439,7 @@ static void compat_setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 {
 	compat_ulong_t handler = ptr_to_compat(ka->sa.sa_handler);
 	compat_ulong_t retcode;
-	compat_ulong_t spsr = regs->pstate & ~PSR_f;
+	compat_ulong_t spsr = regs->pstate & ~(PSR_f | COMPAT_PSR_E_BIT);
 	int thumb;
 
 	/* Check if the handler is written for ARM or Thumb */
@@ -447,6 +452,9 @@ static void compat_setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 
 	/* The IT state must be cleared for both ARM and Thumb-2 */
 	spsr &= ~COMPAT_PSR_IT_MASK;
+
+	/* Restore the original endianness */
+	spsr |= COMPAT_PSR_ENDSTATE;
 
 	if (ka->sa.sa_flags & SA_RESTORER) {
 		retcode = ptr_to_compat(ka->sa.sa_restorer);

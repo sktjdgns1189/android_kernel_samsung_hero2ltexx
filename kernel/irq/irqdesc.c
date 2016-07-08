@@ -15,6 +15,7 @@
 #include <linux/radix-tree.h>
 #include <linux/bitmap.h>
 #include <linux/irqdomain.h>
+#include <linux/exynos-ss.h>
 
 #include "internals.h"
 
@@ -23,11 +24,18 @@
  */
 static struct lock_class_key irq_desc_lock_class;
 
+#ifdef CONFIG_SCHED_HMP
+extern struct cpumask hmp_slow_cpu_mask;
+#endif
 #if defined(CONFIG_SMP)
 static void __init init_irq_default_affinity(void)
 {
 	alloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
+#ifdef CONFIG_SCHED_HMP
+	cpumask_copy(irq_default_affinity, &hmp_slow_cpu_mask);
+#else
 	cpumask_setall(irq_default_affinity);
+#endif
 }
 #else
 static void __init init_irq_default_affinity(void)
@@ -132,6 +140,16 @@ static void free_masks(struct irq_desc *desc)
 static inline void free_masks(struct irq_desc *desc) { }
 #endif
 
+void irq_lock_sparse(void)
+{
+	mutex_lock(&sparse_irq_lock);
+}
+
+void irq_unlock_sparse(void)
+{
+	mutex_unlock(&sparse_irq_lock);
+}
+
 static struct irq_desc *alloc_desc(int irq, int node, struct module *owner)
 {
 	struct irq_desc *desc;
@@ -168,6 +186,12 @@ static void free_desc(unsigned int irq)
 
 	unregister_irq_proc(irq, desc);
 
+	/*
+	 * sparse_irq_lock protects also show_interrupts() and
+	 * kstat_irq_usr(). Once we deleted the descriptor from the
+	 * sparse tree we can free it. Access in proc will fail to
+	 * lookup the descriptor.
+	 */
 	mutex_lock(&sparse_irq_lock);
 	delete_irq_desc(irq);
 	mutex_unlock(&sparse_irq_lock);
@@ -351,9 +375,11 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 			bool lookup, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
+	unsigned long long start_time;
 	unsigned int irq = hwirq;
 	int ret = 0;
 
+	exynos_ss_irq_exit_var(start_time);
 	irq_enter();
 
 #ifdef CONFIG_IRQ_DOMAIN
@@ -373,6 +399,7 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	}
 
 	irq_exit();
+	exynos_ss_irq_exit(irq, start_time);
 	set_irq_regs(old_regs);
 	return ret;
 }
@@ -574,6 +601,15 @@ void kstat_incr_irq_this_cpu(unsigned int irq)
 	kstat_incr_irqs_this_cpu(irq, irq_to_desc(irq));
 }
 
+/**
+ * kstat_irqs_cpu - Get the statistics for an interrupt on a cpu
+ * @irq:	The interrupt number
+ * @cpu:	The cpu number
+ *
+ * Returns the sum of interrupt counts on @cpu since boot for
+ * @irq. The caller must ensure that the interrupt is not removed
+ * concurrently.
+ */
 unsigned int kstat_irqs_cpu(unsigned int irq, int cpu)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
@@ -582,6 +618,14 @@ unsigned int kstat_irqs_cpu(unsigned int irq, int cpu)
 			*per_cpu_ptr(desc->kstat_irqs, cpu) : 0;
 }
 
+/**
+ * kstat_irqs - Get the statistics for an interrupt
+ * @irq:	The interrupt number
+ *
+ * Returns the sum of interrupt counts on all cpus since boot for
+ * @irq. The caller must ensure that the interrupt is not removed
+ * concurrently.
+ */
 unsigned int kstat_irqs(unsigned int irq)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
@@ -592,5 +636,24 @@ unsigned int kstat_irqs(unsigned int irq)
 		return 0;
 	for_each_possible_cpu(cpu)
 		sum += *per_cpu_ptr(desc->kstat_irqs, cpu);
+	return sum;
+}
+
+/**
+ * kstat_irqs_usr - Get the statistics for an interrupt
+ * @irq:	The interrupt number
+ *
+ * Returns the sum of interrupt counts on all cpus since boot for
+ * @irq. Contrary to kstat_irqs() this can be called from any
+ * preemptible context. It's protected against concurrent removal of
+ * an interrupt descriptor when sparse irqs are enabled.
+ */
+unsigned int kstat_irqs_usr(unsigned int irq)
+{
+	int sum;
+
+	irq_lock_sparse();
+	sum = kstat_irqs(irq);
+	irq_unlock_sparse();
 	return sum;
 }

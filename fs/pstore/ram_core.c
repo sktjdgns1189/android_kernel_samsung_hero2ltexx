@@ -207,10 +207,10 @@ static void persistent_ram_ecc_old(struct persistent_ram_zone *prz)
 			size = buffer->data + prz->buffer_size - block;
 		numerr = persistent_ram_decode_rs8(prz, block, size, par);
 		if (numerr > 0) {
-			pr_devel("error in block %p, %d\n", block, numerr);
+			pr_info("error in block %p, %d\n", block, numerr);
 			prz->corrected_bytes += numerr;
 		} else if (numerr < 0) {
-			pr_devel("uncorrectable error in block %p\n", block);
+			pr_info("uncorrectable error in block %p\n", block);
 			prz->bad_blocks++;
 		}
 		block += prz->ecc_info.block_size;
@@ -380,7 +380,8 @@ void persistent_ram_zap(struct persistent_ram_zone *prz)
 	persistent_ram_update_header_ecc(prz);
 }
 
-static void *persistent_ram_vmap(phys_addr_t start, size_t size)
+static void *persistent_ram_vmap(phys_addr_t start, size_t size,
+		unsigned int memtype)
 {
 	struct page **pages;
 	phys_addr_t page_start;
@@ -392,8 +393,19 @@ static void *persistent_ram_vmap(phys_addr_t start, size_t size)
 	page_start = start - offset_in_page(start);
 	page_count = DIV_ROUND_UP(size + offset_in_page(start), PAGE_SIZE);
 
-	prot = pgprot_noncached(PAGE_KERNEL);
-
+#ifndef CONFIG_EXYNOS_SNAPSHOT_PSTORE
+	if (memtype)
+		prot = pgprot_noncached(PAGE_KERNEL);
+	else
+		prot = pgprot_writecombine(PAGE_KERNEL);
+#else
+	/*
+	 * If using exynos-snapshot, we can get the debug information
+	 * from tracing data of exynos-snapshot. So we don't need noncacheable
+	 * region that could cause performace problems.
+	 */
+	prot = PAGE_KERNEL;
+#endif
 	pages = kmalloc_array(page_count, sizeof(struct page *), GFP_KERNEL);
 	if (!pages) {
 		pr_err("%s: Failed to allocate array for %u pages\n",
@@ -411,8 +423,11 @@ static void *persistent_ram_vmap(phys_addr_t start, size_t size)
 	return vaddr;
 }
 
-static void *persistent_ram_iomap(phys_addr_t start, size_t size)
+static void *persistent_ram_iomap(phys_addr_t start, size_t size,
+		unsigned int memtype)
 {
+	void *va;
+
 	if (!request_mem_region(start, size, "persistent_ram")) {
 		pr_err("request mem region (0x%llx@0x%llx) failed\n",
 			(unsigned long long)size, (unsigned long long)start);
@@ -422,19 +437,24 @@ static void *persistent_ram_iomap(phys_addr_t start, size_t size)
 	buffer_start_add = buffer_start_add_locked;
 	buffer_size_add = buffer_size_add_locked;
 
-	return ioremap(start, size);
+	if (memtype)
+		va = ioremap(start, size);
+	else
+		va = ioremap_wc(start, size);
+
+	return va;
 }
 
 static int persistent_ram_buffer_map(phys_addr_t start, phys_addr_t size,
-		struct persistent_ram_zone *prz)
+		struct persistent_ram_zone *prz, int memtype)
 {
 	prz->paddr = start;
 	prz->size = size;
 
 	if (pfn_valid(start >> PAGE_SHIFT))
-		prz->vaddr = persistent_ram_vmap(start, size);
+		prz->vaddr = persistent_ram_vmap(start, size, memtype);
 	else
-		prz->vaddr = persistent_ram_iomap(start, size);
+		prz->vaddr = persistent_ram_iomap(start, size, memtype);
 
 	if (!prz->vaddr) {
 		pr_err("%s: Failed to map 0x%llx pages at 0x%llx\n", __func__,
@@ -465,13 +485,13 @@ static int persistent_ram_post_init(struct persistent_ram_zone *prz, u32 sig,
 			pr_info("found existing invalid buffer, size %zu, start %zu\n",
 				buffer_size(prz), buffer_start(prz));
 		else {
-			pr_debug("found existing buffer, size %zu, start %zu\n",
+			pr_info("found existing buffer, size %zu, start %zu\n",
 				 buffer_size(prz), buffer_start(prz));
 			persistent_ram_save_old(prz);
 			return 0;
 		}
 	} else {
-		pr_debug("no valid data in buffer (sig = 0x%08x)\n",
+		pr_info("no valid data in buffer (sig = 0x%08x)\n",
 			 prz->buffer->sig);
 	}
 
@@ -500,7 +520,8 @@ void persistent_ram_free(struct persistent_ram_zone *prz)
 }
 
 struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
-			u32 sig, struct persistent_ram_ecc_info *ecc_info)
+			u32 sig, struct persistent_ram_ecc_info *ecc_info,
+			unsigned int memtype)
 {
 	struct persistent_ram_zone *prz;
 	int ret = -ENOMEM;
@@ -511,7 +532,7 @@ struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
 		goto err;
 	}
 
-	ret = persistent_ram_buffer_map(start, size, prz);
+	ret = persistent_ram_buffer_map(start, size, prz, memtype);
 	if (ret)
 		goto err;
 

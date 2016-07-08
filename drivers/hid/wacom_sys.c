@@ -70,22 +70,15 @@ static int wacom_raw_event(struct hid_device *hdev, struct hid_report *report,
 static int wacom_open(struct input_dev *dev)
 {
 	struct wacom *wacom = input_get_drvdata(dev);
-	int retval;
 
-	mutex_lock(&wacom->lock);
-	retval = hid_hw_open(wacom->hdev);
-	mutex_unlock(&wacom->lock);
-
-	return retval;
+	return hid_hw_open(wacom->hdev);
 }
 
 static void wacom_close(struct input_dev *dev)
 {
 	struct wacom *wacom = input_get_drvdata(dev);
 
-	mutex_lock(&wacom->lock);
 	hid_hw_close(wacom->hdev);
-	mutex_unlock(&wacom->lock);
 }
 
 /*
@@ -1108,13 +1101,15 @@ static int wacom_allocate_inputs(struct wacom *wacom)
 
 	input_dev = wacom_allocate_input(wacom);
 	pad_input_dev = wacom_allocate_input(wacom);
+
+	wacom_wac->input = input_dev;
+	wacom_wac->pad_input = pad_input_dev;
+
 	if (!input_dev || !pad_input_dev) {
 		wacom_free_inputs(wacom);
 		return -ENOMEM;
 	}
 
-	wacom_wac->input = input_dev;
-	wacom_wac->pad_input = pad_input_dev;
 	wacom_wac->pad_input->name = wacom_wac->pad_name;
 
 	return 0;

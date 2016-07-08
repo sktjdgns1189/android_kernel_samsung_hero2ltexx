@@ -3,6 +3,14 @@
 #include <asm/asm-offsets.h>
 #include <asm/assembler.h>
 
+#ifdef CONFIG_RKP_CFP
+/* TODO:
+ * Persist RRK when we call up to the hypervisor from __invoke_psci_fn_hvc.
+ * (it's not secure to save RRK in memory).
+ */
+#include <asm/rkp_cfp.h>
+#endif
+
 	.text
 /*
  * Implementation of MPIDR_EL1 hash algorithm through shifting
@@ -62,12 +70,19 @@
  *  x1 = suspend finisher function pointer
  */
 ENTRY(__cpu_suspend_enter)
+#ifdef CONFIG_RKP_CFP_ROPP
+	stp	x29, lr, [sp, #-112]!
+#else
 	stp	x29, lr, [sp, #-96]!
+#endif
 	stp	x19, x20, [sp,#16]
 	stp	x21, x22, [sp,#32]
 	stp	x23, x24, [sp,#48]
 	stp	x25, x26, [sp,#64]
 	stp	x27, x28, [sp,#80]
+#ifdef CONFIG_RKP_CFP_ROPP
+	stp	RRK, RRS, [sp,#96]
+#endif
 	/*
 	 * Stash suspend finisher and its argument in x20 and x19
 	 */
@@ -122,7 +137,12 @@ ENTRY(__cpu_suspend_enter)
 	ldp	x23, x24, [sp, #48]
 	ldp	x25, x26, [sp, #64]
 	ldp	x27, x28, [sp, #80]
+#ifdef CONFIG_RKP_CFP_ROPP
+    ldp	RRK, RRS, [sp, #96]
+	ldp	x29, lr, [sp], #112
+#else
 	ldp	x29, lr, [sp], #96
+#endif
 	ret
 ENDPROC(__cpu_suspend_enter)
 	.ltorg
@@ -143,18 +163,24 @@ cpu_resume_after_mmu:
 	ldp	x23, x24, [sp, #48]
 	ldp	x25, x26, [sp, #64]
 	ldp	x27, x28, [sp, #80]
+#ifdef CONFIG_RKP_CFP_ROPP
+    ldp	RRK, RRS, [sp, #96]
+	ldp	x29, lr, [sp], #112
+#else
 	ldp	x29, lr, [sp], #96
+#endif
 	ret
 ENDPROC(cpu_resume_after_mmu)
 
-	.data
 ENTRY(cpu_resume)
+#ifdef CONFIG_RKP_CFP_JOPP
+    load_function_entry_magic_number_no_mmu sleep_magic
+#endif
 	bl	el2_setup		// if in EL2 drop to EL1 cleanly
 #ifdef CONFIG_SMP
 	mrs	x1, mpidr_el1
-	adr	x4, mpidr_hash_ptr
-	ldr	x5, [x4]
-	add	x8, x4, x5		// x8 = struct mpidr_hash phys address
+	adrp	x8, mpidr_hash
+	add x8, x8, #:lo12:mpidr_hash // x8 = struct mpidr_hash phys address
         /* retrieve mpidr_hash members to compute the hash */
 	ldr	x2, [x8, #MPIDR_HASH_MASK]
 	ldp	w3, w4, [x8, #MPIDR_HASH_SHIFTS]
@@ -164,14 +190,15 @@ ENTRY(cpu_resume)
 #else
 	mov	x7, xzr
 #endif
-	adr	x0, sleep_save_sp
+	adrp	x0, sleep_save_sp
+	add	x0, x0, #:lo12:sleep_save_sp
 	ldr	x0, [x0, #SLEEP_SAVE_SP_PHYS]
 	ldr	x0, [x0, x7, lsl #3]
 	/* load sp from context */
 	ldr	x2, [x0, #CPU_CTX_SP]
-	adr	x1, sleep_idmap_phys
+	adrp	x1, sleep_idmap_phys
 	/* load physical address of identity map page table in x1 */
-	ldr	x1, [x1]
+	ldr	x1, [x1, #:lo12:sleep_idmap_phys]
 	mov	sp, x2
 	/*
 	 * cpu_do_resume expects x0 to contain context physical address
@@ -181,25 +208,6 @@ ENTRY(cpu_resume)
 	b	cpu_resume_mmu		// Resume MMU, never returns
 ENDPROC(cpu_resume)
 
-	.align 3
-mpidr_hash_ptr:
-	/*
-	 * offset of mpidr_hash symbol from current location
-	 * used to obtain run-time mpidr_hash address with MMU off
-         */
-	.quad	mpidr_hash - .
-/*
- * physical address of identity mapped page tables
- */
-	.type	sleep_idmap_phys, #object
-ENTRY(sleep_idmap_phys)
-	.quad	0
-/*
- * struct sleep_save_sp {
- *	phys_addr_t *save_ptr_stash;
- *	phys_addr_t save_ptr_stash_phys;
- * };
- */
-	.type	sleep_save_sp, #object
-ENTRY(sleep_save_sp)
-	.space	SLEEP_SAVE_SP_SZ	// struct sleep_save_sp
+#ifdef CONFIG_RKP_CFP_JOPP
+alloc_function_entry_magic_number sleep_magic
+#endif

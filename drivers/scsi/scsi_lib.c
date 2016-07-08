@@ -1299,9 +1299,11 @@ scsi_prep_state_check(struct scsi_device *sdev, struct request *req)
 				    "rejecting I/O to dead device\n");
 			ret = BLKPREP_KILL;
 			break;
-		case SDEV_QUIESCE:
 		case SDEV_BLOCK:
 		case SDEV_CREATED_BLOCK:
+			ret = BLKPREP_DEFER;
+			break;
+		case SDEV_QUIESCE:
 			/*
 			 * If the devices is blocked we defer normal commands.
 			 */
@@ -1598,7 +1600,7 @@ static void scsi_kill_request(struct request *req, struct request_queue *q)
 	blk_complete_request(req);
 }
 
-static void scsi_softirq_done(struct request *rq)
+void scsi_softirq_done(struct request *rq)
 {
 	struct scsi_cmnd *cmd = rq->special;
 	unsigned long wait_for = (cmd->allowed + 1) * rq->timeout;
@@ -1706,6 +1708,7 @@ static void scsi_request_fn(struct request_queue *q)
 		if (!(blk_queue_tagged(q) && !blk_queue_start_tag(q, req)))
 			blk_start_request(req);
 
+		preempt_disable();
 		spin_unlock_irq(q->queue_lock);
 		cmd = req->special;
 		if (unlikely(cmd == NULL)) {
@@ -1730,15 +1733,20 @@ static void scsi_request_fn(struct request_queue *q)
 			if (list_empty(&sdev->starved_entry))
 				list_add_tail(&sdev->starved_entry,
 					      &shost->starved_list);
+			preempt_enable_no_resched();
 			spin_unlock_irq(shost->host_lock);
 			goto not_ready;
 		}
 
-		if (!scsi_target_queue_ready(shost, sdev))
+		if (!scsi_target_queue_ready(shost, sdev)) {
+			preempt_enable_no_resched();
 			goto not_ready;
+		}
 
-		if (!scsi_host_queue_ready(q, shost, sdev))
+		if (!scsi_host_queue_ready(q, shost, sdev)) {
+			preempt_enable_no_resched();
 			goto host_not_ready;
+		}
 
 		/*
 		 * Finally, initialize any error handling parameters, and set up
@@ -1751,6 +1759,7 @@ static void scsi_request_fn(struct request_queue *q)
 		 */
 		cmd->scsi_done = scsi_done;
 		rtn = scsi_dispatch_cmd(cmd);
+		preempt_enable_no_resched();
 		if (rtn) {
 			scsi_queue_insert(cmd, rtn);
 			spin_lock_irq(q->queue_lock);
@@ -1829,7 +1838,9 @@ static int scsi_mq_prep_fn(struct request *req)
 
 	if (scsi_host_get_prot(shost)) {
 		cmd->prot_sdb = (void *)sg +
-			shost->sg_tablesize * sizeof(struct scatterlist);
+			min_t(unsigned int,
+			      shost->sg_tablesize, SCSI_MAX_SG_SEGMENTS) *
+			sizeof(struct scatterlist);
 		memset(cmd->prot_sdb, 0, sizeof(struct scsi_data_buffer));
 
 		cmd->prot_sdb->table.sgl =

@@ -258,6 +258,13 @@ static int edma_terminate_all(struct edma_chan *echan)
 	 */
 	if (echan->edesc) {
 		int cyclic = echan->edesc->cyclic;
+
+		/*
+		 * free the running request descriptor
+		 * since it is not in any of the vdesc lists
+		 */
+		edma_desc_free(&echan->edesc->vdesc);
+
 		echan->edesc = NULL;
 		edma_stop(echan->ch_num);
 		/* Move the cyclic channel back to default queue */
@@ -598,7 +605,7 @@ struct dma_async_tx_descriptor *edma_prep_dma_memcpy(
 static struct dma_async_tx_descriptor *edma_prep_dma_cyclic(
 	struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 	size_t period_len, enum dma_transfer_direction direction,
-	unsigned long tx_flags)
+	unsigned long tx_flags, void *context)
 {
 	struct edma_chan *echan = to_edma_chan(chan);
 	struct device *dev = chan->device->dev;
